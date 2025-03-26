@@ -1,0 +1,38 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © bairapraveen8
+
+//@version=6
+strategy("EMA Crossover with CCI strategy", overlay=true)
+
+// Input for EMAs
+ema5 = ta.ema(close, 5)
+ema8 = ta.ema(close, 8)
+ema13 = ta.ema(close, 13)
+
+// Input for CCI
+cciLength = input(20, title="CCI Length")
+cci = ta.cci(close, cciLength)
+
+// Entry Condition
+longCondition = ta.crossover(ema5, ema8) and ema5 > ema13 and ema8 > ema13 and cci > 100
+
+// Exit Condition
+exitCondition = (ta.crossunder(ema5, ema8) and ema5 < ema13 and ema8 < ema13) and cci < 100
+
+// Execute trade
+if (longCondition)
+    strategy.entry("Long", strategy.long)
+
+if (exitCondition)
+    strategy.close("Long")
+
+// // Plot EMAs
+// plot(ema5, title="5 EMA", color=color.blue, linewidth=2)
+// plot(ema8, title="8 EMA", color=color.green, linewidth=2)
+// plot(ema13, title="13 EMA", color=color.red, linewidth=2)
+
+// // Plot CCI
+// hline(100, "CCI Overbought", color=color.gray)
+// hline(-100, "CCI Oversold", color=color.gray)
+// plot(cci, title="CCI", color=color.orange, linewidth=2)
+
