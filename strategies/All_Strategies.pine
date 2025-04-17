@@ -10,22 +10,26 @@ enum STRATEGY
 enum ACTION 
     BUY = "BUY"
     SELL = "SELL"
+    NONE = "NONE"
 
 type stock
     string name
     float closePrice 
     float highPrice
     float lowPrice
+    float specVolume
+    bool barstateLast
     array<STRATEGY> strategies
 
 close_high_low_price_of_stock(name) => 
-    [closePrice, highPrice, lowPrice] = request.security(name, "D", [close, high, low])
-    stock.new(name = name, closePrice = closePrice, highPrice = highPrice, lowPrice = lowPrice)
+    [closePrice, highPrice, lowPrice, specVolume, barstateLast] = request.security(name, "D", [close, high, low, volume, barstate.islast])
+    stock.new(name = name, closePrice = closePrice, highPrice = highPrice, lowPrice = lowPrice, specVolume = specVolume, barstateLast = barstateLast)
 
 /// ################ DMI + STOCHASTIC STRATEGY #########################
 
-DMI_STOCHASTIC(stock) => 
+DMI_STOCHASTIC(stock, last_buy_price) => 
 
+    // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
     lensig = input.int(20, title="ADX Smoothing", minval=1)
     len = input.int(20, minval=1, title="DI Length")
     stochLength = input(20, title="Stochastic Length")
@@ -33,128 +37,168 @@ DMI_STOCHASTIC(stock) =>
     smoothD = input(3, title="Stochastic %D Smoothing")
     adxlen = input(14, title="ADX Smoothing")
     dilen = input(14, title="DI Length")
-
+ 
     up = ta.change(stock.highPrice)
     down = -ta.change(stock.lowPrice)
     plusDM = na(up) ? na : (up > down and up > 0 ? up : 0)
     minusDM = na(down) ? na : (down > up and down > 0 ? down : 0)
-    truerange = ta.rma(ta.tr, len)
-    plus = fixnan(100 * ta.rma(plusDM, len) / truerange)
-    minus = fixnan(100 * ta.rma(minusDM, len) / truerange)
-
-   
+    truerange = ta.rma(ta.tr, dilen)
+    plus = fixnan(100 * ta.rma(plusDM, dilen) / truerange)
+    minus = fixnan(100 * ta.rma(minusDM, dilen) / truerange)
     sum = plus + minus
     adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen)
+         
+
 
     // Calculate Stochastic Oscillator
     k = ta.sma(ta.stoch(stock.closePrice, stock.highPrice, stock.lowPrice, stochLength), smoothK)
     d = ta.sma(k, smoothD)
+    sma = ta.sma(stock.closePrice, 50)
+    slope = sma - sma[5]
+    trendDirection = slope > 0
+    atr = ta.atr(14)
+    stopLoss = last_buy_price - ( atr*3 ) // 10% stop-loss
+
+    // ✅ Take-Profit Calculation (20% Above Entry)
+    takeProfit = last_buy_price * 1.3  
 
     // Entry Condition: +DI is at least 4% greater than -DI AND Stochastic is above 50
-    longCondition = (plus > minus * 1.04)  and k > 50
+    longCondition = (plus > minus * 1.04)  and k > 50 and trendDirection
 
     // Exit Condition: +DI crosses below -DI OR Stochastic falls below 30
-    exitCondition = (plus < minus * 1.04) and k < 30
+    exitCondition = ((plus < minus * 1.04) and k < 20 ) or stock.closePrice >= takeProfit or stock.closePrice <= stopLoss
 
+    ACTION RES = ACTION.NONE
+    var last_buy_price_modified = float(na)
     // Execute trade
-    if (longCondition)
-        ACTION.BUY
-         
+    if (longCondition and na (last_buy_price))
+        last_buy_price_modified := stock.closePrice
+        RES := ACTION.BUY
 
     // Close trade when exit condition met
-    if (exitCondition)
-        ACTION.SELL
+    if (exitCondition) and not na (last_buy_price)
+        last_buy_price_modified := float(na)
+        RES := ACTION.SELL
+
+    [RES, last_buy_price_modified]
+
+
+
 
 
 // ###################### EMA + CCI STRATEGY #####################
 
 
-EMI_CCI_STRATEGY(STOCK) => 
+EMI_CCI_STRATEGY(STOCK , last_buy_price) => 
     // Input for EMAs
-    ema5 = ta.ema(STOCK.closePrice, 5)
-    ema8 = ta.ema(STOCK.closePrice, 8)
+    // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © bairapraveen8
+
+
+
+// Input for EMAs
     ema13 = ta.ema(STOCK.closePrice, 13)
+    ema26 = ta.ema(STOCK.closePrice, 26)
+    ema52 = ta.ema(STOCK.closePrice, 52)
 
     // Input for CCI
-    cciLength = input(20, title="CCI Length")
+    cciLength = input(25, title="CCI Length")
     cci = ta.cci(STOCK.closePrice, cciLength)
+    atr = ta.atr(14)
+    stopLoss =  last_buy_price - ( atr*4 ) // 10% stop-loss
 
-    // Entry Condition
-    longCondition = ta.crossover(ema5, ema8) and ema5 > ema13 and ema8 > ema13 and cci > 100
+    // ✅ Take-Profit Calculation (20% Above Entry)
+    takeProfit =  last_buy_price * 1.5 
+
+    // Entry Condition 
+    longCondition = ema13 >= ema26 and ema13 >= ema52 and ema26 >= ema52 and cci > 80
 
     // Exit Condition
-    exitCondition = (ta.crossunder(ema5, ema8) and ema5 < ema13 and ema8 < ema13) and cci < 100
+    exitCondition = (( ta.crossunder(ema13,ema26) and ema13 < ema26 and ema13 <= ema52) and cci < 20) or (close <= stopLoss) or (close >= takeProfit)
+
+    ACTION RES = ACTION.NONE
+    var last_buy_price_modified = float(na)
 
     // Execute trade
-    if (longCondition)
-        ACTION.BUY
-         
+    if (longCondition and na (last_buy_price))
+        last_buy_price_modified := STOCK.closePrice
+        RES := ACTION.BUY
 
-    if (exitCondition)
-        ACTION.SELL
+    if (exitCondition) and not na (last_buy_price)
+        last_buy_price_modified := float(na)
+        RES := ACTION.SELL
+
+    [RES, last_buy_price_modified]
+
 
 
 /// #################### MACD + CMF STRATEGY ########################
 
-MACD_CMF_STRATEGY(STOCK) => 
+MACD_CMF_STRATEGY(STOCK , last_buy_price) => 
+
+    // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+
+    sma10 = ta.sma(STOCK.closePrice,10)
 
     sma50 = ta.sma(STOCK.closePrice,50)
     sma20 = ta.sma(STOCK.closePrice,20)
+    slope = sma50 - sma50[5]
+    trendDirection = slope > 0
+
 
     // Calculate CMF (Chaikin Money Flow)
     var cumVol = 0.
-    cumVol += nz(volume)
-    if barstate.islast and cumVol == 0
+    cumVol += nz(STOCK.specVolume)
+    if STOCK.barstateLast and cumVol == 0
         runtime.error("No volume is provided by the data vendor.")
     length = input.int(20, minval=1)
-    ad = STOCK.closePrice==STOCK.highPrice and STOCK.closePrice==STOCK.lowPrice or STOCK.highPrice==STOCK.lowPrice ? 0 : ((2*STOCK.closePrice-STOCK.lowPrice-STOCK.highPrice)/(STOCK.highPrice-STOCK.lowPrice))*volume
-    mf = math.sum(ad, length) / math.sum(volume, length)
+    ad = STOCK.closePrice==STOCK.highPrice and STOCK.closePrice==STOCK.lowPrice or STOCK.highPrice==STOCK.lowPrice ? 0 : ((2*STOCK.closePrice-STOCK.lowPrice-STOCK.highPrice)/(STOCK.highPrice-STOCK.lowPrice))*STOCK.specVolume
+    mf = math.sum(ad, length) / math.sum(STOCK.specVolume, length)
     // plot(mf, "CMF",  color = #43A047)
     // hline(0, "Zero", color = #787B86, linestyle = hline.style_dashed)
 
     // Calculate MACD
     // Getting inputs
-    fast_length = input(title = "Fast Length", defval = 12)
-    slow_length = input(title = "Slow Length", defval = 26)
-    src = STOCK.closePrice
-    signal_length = input.int(title = "Signal Smoothing",  minval = 1, maxval = 50, defval = 9, display = display.data_window)
-    sma_source = input.string(title = "Oscillator MA Type",  defval = "EMA", options = ["SMA", "EMA"], display = display.data_window)
-    sma_signal = input.string(title = "Signal Line MA Type", defval = "EMA", options = ["SMA", "EMA"], display = display.data_window)
-    // Calculating
-    fast_ma = sma_source == "SMA" ? ta.sma(src, fast_length) : ta.ema(src, fast_length)
-    slow_ma = sma_source == "SMA" ? ta.sma(src, slow_length) : ta.ema(src, slow_length)
-    macd = fast_ma - slow_ma
-    signal = sma_signal == "SMA" ? ta.sma(macd, signal_length) : ta.ema(macd, signal_length)
+    [macd, signal, _] = ta.macd(STOCK.closePrice, 12, 26, 9)
     hist = macd - signal
     postitve_diff_percent = ((macd - signal ) / math.abs(signal)) * 100
     negative_diff_percent = ((signal - macd ) / math.abs(signal)) * 100
+    atr = ta.atr(14)
+    stopLoss = last_buy_price - ( atr*4 ) // 10% stop-loss
 
-    //alertcondition(hist[1] >= 0 and hist < 0, title = 'Rising to falling', message = 'The MACD histogram switched from a rising to falling state')
-    //alertcondition(hist[1] <= 0 and hist > 0, title = 'Falling to rising', message = 'The MACD histogram switched from a falling to rising state')
-
-    // hline(0, "Zero Line", color = color.new(#787B86, 50))
-    // plot(hist, title = "Histogram", style = plot.style_columns, color = (hist >= 0 ? (hist[1] < hist ? #26A69A : #B2DFDB) : (hist[1] < hist ? #FFCDD2 : #FF5252)))
-    // plot(macd,   title = "MACD",   color = #2962FF, force_overlay = false)
-    // plot(signal, title = "Signal", color = #FF6D00,force_overlay = false)
+    // ✅ Take-Profit Calculation (20% Above Entry)
+    takeProfit = last_buy_price * 1.23  
 
     // Entry Condition: CMF > 0.05 AND MACD Line > Signal Line
-    longCondition = mf > 0.05 and STOCK.closePrice > sma20 and macd > signal and postitve_diff_percent > 4
+    longCondition = mf > 0.05  and macd > signal and postitve_diff_percent > 4 and trendDirection
 
     // Exit Condition: mf < 0.05 OR MACD Line < Signal Line
-    exitCondition = ta.crossunder(STOCK.closePrice, sma50)
+    exitCondition = ta.crossunder(sma10, sma50) or (STOCK.closePrice >= takeProfit) or ( STOCK.closePrice<= stopLoss )
+
+
+    ACTION RES = ACTION.NONE
+    var last_buy_price_modified = float(na)
+
+     
 
     // Enter trade when conditions are met
-    if (longCondition)
-        ACTION.BUY
-
+    if (longCondition and na (last_buy_price))
+        last_buy_price_modified := STOCK.closePrice
+        RES := ACTION.BUY
     // Exit trade when exit conditions are met
-    if (exitCondition)
-        ACTION.SELL
+    if (exitCondition) and not na (last_buy_price)
+        last_buy_price_modified := float(na)
+        RES := ACTION.SELL
+
+    [RES, last_buy_price_modified]
+    
+
 
 
 // ################# BB + DMI + MACD STRATEGY ########################
 
-BB_DMI_MACD_STRATEGY(STOCK) => 
+BB_DMI_MACD_STRATEGY(STOCK , last_buy_price) => 
+
 
     // Bollinger Bands Calculation
     length = 20
@@ -180,8 +224,6 @@ BB_DMI_MACD_STRATEGY(STOCK) =>
     truerange = ta.rma(ta.tr, dilen)
     plus = fixnan(100 * ta.rma(plusDM, dilen) / truerange)
     minus = fixnan(100 * ta.rma(minusDM, dilen) / truerange)
-
-   
     sum = plus + minus
     adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen)
 
@@ -190,16 +232,31 @@ BB_DMI_MACD_STRATEGY(STOCK) =>
     [macdLine, signalLine, _] = ta.macd(STOCK.closePrice, 12, 26, 9)
     postitve_diff_percent = ((macdLine - signalLine ) / math.abs(signalLine)) * 100
     negative_diff_percent = ((signalLine - macdLine ) / math.abs(signalLine)) * 100
+    atr = ta.atr(14)
+    stopLoss = last_buy_price - ( atr*4 ) // 10% stop-loss
+
+    // ✅ Take-Profit Calculation (20% Above Entry)
+    takeProfit = last_buy_price * 1.3  
+
+    ACTION RES = ACTION.NONE
+    var last_buy_price_modified = float(na)
 
     // Entry Condition
     longCondition = sma20 > sma50 and b_percent > 0.7 and adx > 20  and macdLine > signalLine and postitve_diff_percent > 4
-    if (longCondition)
-        ACTION.BUY
+    if (longCondition and  na (last_buy_price))
+        last_buy_price_modified := STOCK.closePrice
+        RES := ACTION.BUY
 
     // Exit Condition
-    exitCondition = ta.crossunder(sma20,sma50)
-    if (exitCondition)
-        ACTION.SELL
+    exitCondition = ta.crossunder(sma20,sma50) or (STOCK.closePrice >= takeProfit) or ( STOCK.closePrice <= stopLoss)
+    if (exitCondition) and not na (last_buy_price)
+        last_buy_price_modified := float(na)
+        RES := ACTION.SELL
+
+    [RES , last_buy_price_modified]
+
+
+
 
 // Fetch daily closing prices for each stock
 BASF = close_high_low_price_of_stock("BASF")
@@ -209,46 +266,52 @@ BASF.strategies.push(STRATEGY.EMA_CCI)
 BASF.strategies.push(STRATEGY.MACD_CMF)
 BASF.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for BASF
-var basf_last_signal_dmi_stochastic = "NONE"
-var basf_last_signal_ema_cci = "NONE"
-var basf_last_signal_macd_cmf = "NONE"
-var basf_last_signal_bb_dmi_macd = "NONE"
+var basf_last_buy_price_dmi_stochastic = float(na)
+var basf_last_buy_price_ema_cci = float(na)
+var basf_last_buy_price_macd_cmf = float(na)
+var basf_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(BASF.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(BASF)
-    if RES == ACTION.BUY and basf_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ]  = DMI_STOCHASTIC(BASF,basf_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY  
+        basf_last_buy_price_dmi_stochastic := entryPrice
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for BASF", alert.freq_once_per_bar_close)
-        basf_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and basf_last_signal_dmi_stochastic == 'BUY'
+    if RES == ACTION.SELL 
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for BASF", alert.freq_once_per_bar_close)
-        basf_last_signal_dmi_stochastic := 'SELL'
+        basf_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(BASF.strategies, STRATEGY.EMA_CCI)
-    ACTION RES =  EMI_CCI_STRATEGY(BASF)
-    if RES == ACTION.BUY and basf_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ]  =  EMI_CCI_STRATEGY(BASF, basf_last_buy_price_ema_cci)
+    if RES == ACTION.BUY  
+        
         alert("⚠️ Buy signal based on EMA_CCI for BASF", alert.freq_once_per_bar_close)
-        basf_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and basf_last_signal_ema_cci == 'BUY'
+        basf_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL  
+        
         alert("⚠️ Sell signal based on EMA_CCI for BASF", alert.freq_once_per_bar_close)
-        basf_last_signal_ema_cci := 'SELL'
+        basf_last_buy_price_ema_cci := entryPrice
 
 if array.includes(BASF.strategies, STRATEGY.MACD_CMF)
-    ACTION RES =  MACD_CMF_STRATEGY(BASF) 
-    if RES == ACTION.BUY and basf_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ]  =  MACD_CMF_STRATEGY(BASF , basf_last_buy_price_macd_cmf) 
+    if RES == ACTION.BUY  
+        
         alert("⚠️ Buy signal based on MACD_CMF for BASF", alert.freq_once_per_bar_close)
-        basf_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and basf_last_signal_macd_cmf == 'BUY'
+        basf_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL  
+        
         alert("⚠️ Sell signal based on MACD_CMF for BASF", alert.freq_once_per_bar_close)
-        basf_last_signal_macd_cmf := 'SELL'
+        basf_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(BASF.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES  =  BB_DMI_MACD_STRATEGY(BASF)
-    if RES == ACTION.BUY and basf_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ]   =  BB_DMI_MACD_STRATEGY(BASF , basf_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY 
+         
         alert("⚠️ Buy signal based on BB_DMI_MACD for BASF", alert.freq_once_per_bar_close)
-        basf_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and basf_last_signal_bb_dmi_macd == 'BUY'
+        basf_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL  
+        
         alert("⚠️ Sell signal based on BB_DMI_MACD for BASF", alert.freq_once_per_bar_close)
-        basf_last_signal_bb_dmi_macd := 'SELL'
+        basf_last_buy_price_bb_dmi_macd := entryPrice
 
 
 ASIANPAINT = close_high_low_price_of_stock("ASIANPAINT")
@@ -258,93 +321,96 @@ ASIANPAINT.strategies.push(STRATEGY.EMA_CCI)
 ASIANPAINT.strategies.push(STRATEGY.MACD_CMF)
 ASIANPAINT.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for ASIANPAINT
-var asianpaint_last_signal_dmi_stochastic = "NONE"
-var asianpaint_last_signal_ema_cci = "NONE"
-var asianpaint_last_signal_macd_cmf = "NONE"
-var asianpaint_last_signal_bb_dmi_macd = "NONE"
+var asianpaint_last_buy_price_dmi_stochastic = float(na)
+var asianpaint_last_buy_price_ema_cci = float(na)
+var asianpaint_last_buy_price_macd_cmf = float(na)
+var asianpaint_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(ASIANPAINT.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(ASIANPAINT)
-    if RES == ACTION.BUY and asianpaint_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ]  = DMI_STOCHASTIC(ASIANPAINT, asianpaint_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY  
+        asianpaint_last_buy_price_dmi_stochastic := entryPrice
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for ASIANPAINT", alert.freq_once_per_bar_close)
-        asianpaint_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and asianpaint_last_signal_dmi_stochastic == 'BUY'
+    if RES == ACTION.SELL 
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for ASIANPAINT", alert.freq_once_per_bar_close)
-        asianpaint_last_signal_dmi_stochastic := 'SELL'
+        asianpaint_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(ASIANPAINT.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(ASIANPAINT)
-    if RES == ACTION.BUY and asianpaint_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ]  = EMI_CCI_STRATEGY(ASIANPAINT, asianpaint_last_buy_price_ema_cci)
+    if RES == ACTION.BUY  
         alert("⚠️ Buy signal based on EMA_CCI for ASIANPAINT", alert.freq_once_per_bar_close)
-        asianpaint_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and asianpaint_last_signal_ema_cci == 'BUY'
+        asianpaint_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL  
         alert("⚠️ Sell signal based on EMA_CCI for ASIANPAINT", alert.freq_once_per_bar_close)
-        asianpaint_last_signal_ema_cci := 'SELL'
+        asianpaint_last_buy_price_ema_cci := entryPrice
 
 if array.includes(ASIANPAINT.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(ASIANPAINT)
-    if RES == ACTION.BUY and asianpaint_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ]  = MACD_CMF_STRATEGY(ASIANPAINT, asianpaint_last_buy_price_macd_cmf) 
+    if RES == ACTION.BUY  
+         
         alert("⚠️ Buy signal based on MACD_CMF for ASIANPAINT", alert.freq_once_per_bar_close)
-        asianpaint_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and asianpaint_last_signal_macd_cmf == 'BUY'
+        asianpaint_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL  
+         
         alert("⚠️ Sell signal based on MACD_CMF for ASIANPAINT", alert.freq_once_per_bar_close)
-        asianpaint_last_signal_macd_cmf := 'SELL'
+        asianpaint_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(ASIANPAINT.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(ASIANPAINT)
-    if RES == ACTION.BUY and asianpaint_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(ASIANPAINT, asianpaint_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY  
+        
         alert("⚠️ Buy signal based on BB_DMI_MACD for ASIANPAINT", alert.freq_once_per_bar_close)
-        asianpaint_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and asianpaint_last_signal_bb_dmi_macd == 'BUY'
+        asianpaint_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL  
+        
         alert("⚠️ Sell signal based on BB_DMI_MACD for ASIANPAINT", alert.freq_once_per_bar_close)
-        asianpaint_last_signal_bb_dmi_macd := 'SELL'
+        asianpaint_last_buy_price_bb_dmi_macd := entryPrice
 
 
 SBICARD = close_high_low_price_of_stock("SBICARD")
 SBICARD.strategies := array.new<STRATEGY>()
 SBICARD.strategies.push(STRATEGY.DMI_STOCHASTIC)
 // Optimized Strategy Execution for SBICARD
-var sbicard_last_signal_dmi_stochastic = "NONE"
-var sbicard_last_signal_ema_cci = "NONE"
-var sbicard_last_signal_macd_cmf = "NONE"
-var sbicard_last_signal_bb_dmi_macd = "NONE"
+var sbicard_last_buy_price_dmi_stochastic = float(na)
+var sbicard_last_buy_price_ema_cci = float(na)
+var sbicard_last_buy_price_macd_cmf = float(na)
+var sbicard_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(SBICARD.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(SBICARD)
-    if RES == ACTION.BUY and sbicard_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(SBICARD, sbicard_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
+        sbicard_last_buy_price_dmi_stochastic := entryPrice
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for SBICARD", alert.freq_once_per_bar_close)
-        sbicard_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and sbicard_last_signal_dmi_stochastic == 'BUY'
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for SBICARD", alert.freq_once_per_bar_close)
-        sbicard_last_signal_dmi_stochastic := 'SELL'
+        sbicard_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(SBICARD.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(SBICARD)
-    if RES == ACTION.BUY and sbicard_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(SBICARD, sbicard_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for SBICARD", alert.freq_once_per_bar_close)
-        sbicard_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and sbicard_last_signal_ema_cci == 'BUY'
+        sbicard_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for SBICARD", alert.freq_once_per_bar_close)
-        sbicard_last_signal_ema_cci := 'SELL'
+        sbicard_last_buy_price_ema_cci := entryPrice
 
 if array.includes(SBICARD.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(SBICARD)
-    if RES == ACTION.BUY and sbicard_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(SBICARD, sbicard_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for SBICARD", alert.freq_once_per_bar_close)
-        sbicard_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and sbicard_last_signal_macd_cmf == 'BUY'
+        sbicard_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for SBICARD", alert.freq_once_per_bar_close)
-        sbicard_last_signal_macd_cmf := 'SELL'
+        sbicard_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(SBICARD.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(SBICARD)
-    if RES == ACTION.BUY and sbicard_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(SBICARD, sbicard_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for SBICARD", alert.freq_once_per_bar_close)
-        sbicard_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and sbicard_last_signal_bb_dmi_macd == 'BUY'
+        sbicard_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for SBICARD", alert.freq_once_per_bar_close)
-        sbicard_last_signal_bb_dmi_macd := 'SELL'
-
+        sbicard_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -354,49 +420,46 @@ GABRIEL.strategies := array.new<STRATEGY>()
 GABRIEL.strategies.push(STRATEGY.DMI_STOCHASTIC)
 GABRIEL.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for GABRIEL
-var gabriel_last_signal_dmi_stochastic = "NONE"
-var gabriel_last_signal_ema_cci = "NONE"
-var gabriel_last_signal_macd_cmf = "NONE"
-var gabriel_last_signal_bb_dmi_macd = "NONE"
+var gabriel_last_buy_price_dmi_stochastic = float(na)
+var gabriel_last_buy_price_ema_cci = float(na)
+var gabriel_last_buy_price_macd_cmf = float(na)
+var gabriel_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(GABRIEL.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(GABRIEL)
-    if RES == ACTION.BUY and gabriel_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(GABRIEL, gabriel_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
+        gabriel_last_buy_price_dmi_stochastic := entryPrice
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for GABRIEL", alert.freq_once_per_bar_close)
-        gabriel_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and gabriel_last_signal_dmi_stochastic == 'BUY'
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for GABRIEL", alert.freq_once_per_bar_close)
-        gabriel_last_signal_dmi_stochastic := 'SELL'
+        gabriel_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(GABRIEL.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(GABRIEL)
-    if RES == ACTION.BUY and gabriel_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(GABRIEL, gabriel_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for GABRIEL", alert.freq_once_per_bar_close)
-        gabriel_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and gabriel_last_signal_ema_cci == 'BUY'
+        gabriel_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for GABRIEL", alert.freq_once_per_bar_close)
-        gabriel_last_signal_ema_cci := 'SELL'
+        gabriel_last_buy_price_ema_cci := entryPrice
 
 if array.includes(GABRIEL.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(GABRIEL)
-    if RES == ACTION.BUY and gabriel_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(GABRIEL, gabriel_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for GABRIEL", alert.freq_once_per_bar_close)
-        gabriel_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and gabriel_last_signal_macd_cmf == 'BUY'
+        gabriel_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for GABRIEL", alert.freq_once_per_bar_close)
-        gabriel_last_signal_macd_cmf := 'SELL'
+        gabriel_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(GABRIEL.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(GABRIEL)
-    if RES == ACTION.BUY and gabriel_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(GABRIEL, gabriel_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for GABRIEL", alert.freq_once_per_bar_close)
-        gabriel_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and gabriel_last_signal_bb_dmi_macd == 'BUY'
+        gabriel_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for GABRIEL", alert.freq_once_per_bar_close)
-        gabriel_last_signal_bb_dmi_macd := 'SELL'
-
-
-
+        gabriel_last_buy_price_bb_dmi_macd := entryPrice
 
 
 SBILIFE = close_high_low_price_of_stock("SBILIFE")
@@ -405,48 +468,48 @@ SBILIFE.strategies.push(STRATEGY.DMI_STOCHASTIC)
 SBILIFE.strategies.push(STRATEGY.MACD_CMF)
 SBILIFE.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for SBILIFE
-var sbilife_last_signal_dmi_stochastic = "NONE"
-var sbilife_last_signal_ema_cci = "NONE"
-var sbilife_last_signal_macd_cmf = "NONE"
-var sbilife_last_signal_bb_dmi_macd = "NONE"
+var sbilife_last_buy_price_dmi_stochastic = float(na)
+var sbilife_last_buy_price_ema_cci = float(na)
+var sbilife_last_buy_price_macd_cmf = float(na)
+var sbilife_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(SBILIFE.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(SBILIFE)
-    if RES == ACTION.BUY and sbilife_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(SBILIFE, sbilife_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
+        sbilife_last_buy_price_dmi_stochastic := entryPrice
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for SBILIFE", alert.freq_once_per_bar_close)
-        sbilife_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and sbilife_last_signal_dmi_stochastic == 'BUY'
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for SBILIFE", alert.freq_once_per_bar_close)
-        sbilife_last_signal_dmi_stochastic := 'SELL'
+        sbilife_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(SBILIFE.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(SBILIFE)
-    if RES == ACTION.BUY and sbilife_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(SBILIFE, sbilife_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for SBILIFE", alert.freq_once_per_bar_close)
-        sbilife_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and sbilife_last_signal_ema_cci == 'BUY'
+        sbilife_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for SBILIFE", alert.freq_once_per_bar_close)
-        sbilife_last_signal_ema_cci := 'SELL'
+        sbilife_last_buy_price_ema_cci := entryPrice
 
 if array.includes(SBILIFE.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(SBILIFE)
-    if RES == ACTION.BUY and sbilife_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(SBILIFE, sbilife_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for SBILIFE", alert.freq_once_per_bar_close)
-        sbilife_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and sbilife_last_signal_macd_cmf == 'BUY'
+        sbilife_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for SBILIFE", alert.freq_once_per_bar_close)
-        sbilife_last_signal_macd_cmf := 'SELL'
+        sbilife_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(SBILIFE.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(SBILIFE)
-    if RES == ACTION.BUY and sbilife_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(SBILIFE, sbilife_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
+        
         alert("⚠️ Buy signal based on BB_DMI_MACD for SBILIFE", alert.freq_once_per_bar_close)
-        sbilife_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and sbilife_last_signal_bb_dmi_macd == 'BUY'
+        sbilife_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
+        
         alert("⚠️ Sell signal based on BB_DMI_MACD for SBILIFE", alert.freq_once_per_bar_close)
-        sbilife_last_signal_bb_dmi_macd := 'SELL'
-
-
+        sbilife_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -457,48 +520,46 @@ HAVELLS.strategies.push(STRATEGY.EMA_CCI)
 HAVELLS.strategies.push(STRATEGY.MACD_CMF)
 HAVELLS.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for HAVELLS
-var havells_last_signal_dmi_stochastic = "NONE"
-var havells_last_signal_ema_cci = "NONE"
-var havells_last_signal_macd_cmf = "NONE"
-var havells_last_signal_bb_dmi_macd = "NONE"
+var havells_last_buy_price_dmi_stochastic = float(na)
+var havells_last_buy_price_ema_cci = float(na)
+var havells_last_buy_price_macd_cmf = float(na)
+var havells_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(HAVELLS.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(HAVELLS)
-    if RES == ACTION.BUY and havells_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(HAVELLS, havells_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
+        havells_last_buy_price_dmi_stochastic := entryPrice
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for HAVELLS", alert.freq_once_per_bar_close)
-        havells_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and havells_last_signal_dmi_stochastic == 'BUY'
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for HAVELLS", alert.freq_once_per_bar_close)
-        havells_last_signal_dmi_stochastic := 'SELL'
+        havells_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(HAVELLS.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(HAVELLS)
-    if RES == ACTION.BUY and havells_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(HAVELLS, havells_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for HAVELLS", alert.freq_once_per_bar_close)
-        havells_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and havells_last_signal_ema_cci == 'BUY'
+        havells_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for HAVELLS", alert.freq_once_per_bar_close)
-        havells_last_signal_ema_cci := 'SELL'
+        havells_last_buy_price_ema_cci := entryPrice
 
 if array.includes(HAVELLS.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(HAVELLS)
-    if RES == ACTION.BUY and havells_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(HAVELLS, havells_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for HAVELLS", alert.freq_once_per_bar_close)
-        havells_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and havells_last_signal_macd_cmf == 'BUY'
+        havells_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for HAVELLS", alert.freq_once_per_bar_close)
-        havells_last_signal_macd_cmf := 'SELL'
+        havells_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(HAVELLS.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(HAVELLS)
-    if RES == ACTION.BUY and havells_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(HAVELLS, havells_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for HAVELLS", alert.freq_once_per_bar_close)
-        havells_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and havells_last_signal_bb_dmi_macd == 'BUY'
+        havells_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for HAVELLS", alert.freq_once_per_bar_close)
-        havells_last_signal_bb_dmi_macd := 'SELL'
-
-
+        havells_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -508,48 +569,46 @@ ADANIGREEN.strategies.push(STRATEGY.DMI_STOCHASTIC)
 ADANIGREEN.strategies.push(STRATEGY.EMA_CCI)
 ADANIGREEN.strategies.push(STRATEGY.MACD_CMF)
 // Optimized Strategy Execution for ADANIGREEN
-var adanigreen_last_signal_dmi_stochastic = "NONE"
-var adanigreen_last_signal_ema_cci = "NONE"
-var adanigreen_last_signal_macd_cmf = "NONE"
-var adanigreen_last_signal_bb_dmi_macd = "NONE"
+var adanigreen_last_buy_price_dmi_stochastic = float(na)
+var adanigreen_last_buy_price_ema_cci = float(na)
+var adanigreen_last_buy_price_macd_cmf = float(na)
+var adanigreen_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(ADANIGREEN.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(ADANIGREEN)
-    if RES == ACTION.BUY and adanigreen_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(ADANIGREEN, adanigreen_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for ADANIGREEN", alert.freq_once_per_bar_close)
-        adanigreen_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and adanigreen_last_signal_dmi_stochastic == 'BUY'
+        adanigreen_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for ADANIGREEN", alert.freq_once_per_bar_close)
-        adanigreen_last_signal_dmi_stochastic := 'SELL'
+        adanigreen_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(ADANIGREEN.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(ADANIGREEN)
-    if RES == ACTION.BUY and adanigreen_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(ADANIGREEN, adanigreen_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for ADANIGREEN", alert.freq_once_per_bar_close)
-        adanigreen_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and adanigreen_last_signal_ema_cci == 'BUY'
+        adanigreen_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for ADANIGREEN", alert.freq_once_per_bar_close)
-        adanigreen_last_signal_ema_cci := 'SELL'
+        adanigreen_last_buy_price_ema_cci := entryPrice
 
 if array.includes(ADANIGREEN.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(ADANIGREEN)
-    if RES == ACTION.BUY and adanigreen_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(ADANIGREEN, adanigreen_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for ADANIGREEN", alert.freq_once_per_bar_close)
-        adanigreen_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and adanigreen_last_signal_macd_cmf == 'BUY'
+        adanigreen_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for ADANIGREEN", alert.freq_once_per_bar_close)
-        adanigreen_last_signal_macd_cmf := 'SELL'
+        adanigreen_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(ADANIGREEN.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(ADANIGREEN)
-    if RES == ACTION.BUY and adanigreen_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(ADANIGREEN, adanigreen_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for ADANIGREEN", alert.freq_once_per_bar_close)
-        adanigreen_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and adanigreen_last_signal_bb_dmi_macd == 'BUY'
+        adanigreen_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for ADANIGREEN", alert.freq_once_per_bar_close)
-        adanigreen_last_signal_bb_dmi_macd := 'SELL'
-
-
+        adanigreen_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -560,49 +619,46 @@ DMART.strategies.push(STRATEGY.EMA_CCI)
 DMART.strategies.push(STRATEGY.MACD_CMF)
 DMART.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for DMART
-var dmart_last_signal_dmi_stochastic = "NONE"
-var dmart_last_signal_ema_cci = "NONE"
-var dmart_last_signal_macd_cmf = "NONE"
-var dmart_last_signal_bb_dmi_macd = "NONE"
+var dmart_last_buy_price_dmi_stochastic = float(na)
+var dmart_last_buy_price_ema_cci = float(na)
+var dmart_last_buy_price_macd_cmf = float(na)
+var dmart_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(DMART.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(DMART)
-    if RES == ACTION.BUY and dmart_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(DMART, dmart_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for DMART", alert.freq_once_per_bar_close)
-        dmart_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and dmart_last_signal_dmi_stochastic == 'BUY'
+        dmart_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for DMART", alert.freq_once_per_bar_close)
-        dmart_last_signal_dmi_stochastic := 'SELL'
+        dmart_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(DMART.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(DMART)
-    if RES == ACTION.BUY and dmart_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(DMART, dmart_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for DMART", alert.freq_once_per_bar_close)
-        dmart_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and dmart_last_signal_ema_cci == 'BUY'
+        dmart_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for DMART", alert.freq_once_per_bar_close)
-        dmart_last_signal_ema_cci := 'SELL'
+        dmart_last_buy_price_ema_cci := entryPrice
 
 if array.includes(DMART.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(DMART)
-    if RES == ACTION.BUY and dmart_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(DMART, dmart_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for DMART", alert.freq_once_per_bar_close)
-        dmart_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and dmart_last_signal_macd_cmf == 'BUY'
+        dmart_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for DMART", alert.freq_once_per_bar_close)
-        dmart_last_signal_macd_cmf := 'SELL'
+        dmart_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(DMART.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(DMART)
-    if RES == ACTION.BUY and dmart_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(DMART, dmart_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for DMART", alert.freq_once_per_bar_close)
-        dmart_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and dmart_last_signal_bb_dmi_macd == 'BUY'
+        dmart_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for DMART", alert.freq_once_per_bar_close)
-        dmart_last_signal_bb_dmi_macd := 'SELL'
-
-
-
+        dmart_last_buy_price_bb_dmi_macd := entryPrice
 
 
 LICI = close_high_low_price_of_stock("LICI")
@@ -611,47 +667,46 @@ LICI.strategies.push(STRATEGY.DMI_STOCHASTIC)
 LICI.strategies.push(STRATEGY.EMA_CCI)
 LICI.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for LICI
-var lici_last_signal_dmi_stochastic = "NONE"
-var lici_last_signal_ema_cci = "NONE"
-var lici_last_signal_macd_cmf = "NONE"
-var lici_last_signal_bb_dmi_macd = "NONE"
+var lici_last_buy_price_dmi_stochastic = float(na)
+var lici_last_buy_price_ema_cci = float(na)
+var lici_last_buy_price_macd_cmf = float(na)
+var lici_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(LICI.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(LICI)
-    if RES == ACTION.BUY and lici_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(LICI, lici_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for LICI", alert.freq_once_per_bar_close)
-        lici_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and lici_last_signal_dmi_stochastic == 'BUY'
+        lici_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for LICI", alert.freq_once_per_bar_close)
-        lici_last_signal_dmi_stochastic := 'SELL'
+        lici_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(LICI.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(LICI)
-    if RES == ACTION.BUY and lici_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(LICI, lici_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for LICI", alert.freq_once_per_bar_close)
-        lici_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and lici_last_signal_ema_cci == 'BUY'
+        lici_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for LICI", alert.freq_once_per_bar_close)
-        lici_last_signal_ema_cci := 'SELL'
+        lici_last_buy_price_ema_cci := entryPrice
 
 if array.includes(LICI.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(LICI)
-    if RES == ACTION.BUY and lici_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(LICI, lici_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for LICI", alert.freq_once_per_bar_close)
-        lici_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and lici_last_signal_macd_cmf == 'BUY'
+        lici_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for LICI", alert.freq_once_per_bar_close)
-        lici_last_signal_macd_cmf := 'SELL'
+        lici_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(LICI.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(LICI)
-    if RES == ACTION.BUY and lici_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(LICI, lici_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for LICI", alert.freq_once_per_bar_close)
-        lici_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and lici_last_signal_bb_dmi_macd == 'BUY'
+        lici_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for LICI", alert.freq_once_per_bar_close)
-        lici_last_signal_bb_dmi_macd := 'SELL'
-
+        lici_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -662,48 +717,46 @@ SIEMENS.strategies.push(STRATEGY.EMA_CCI)
 SIEMENS.strategies.push(STRATEGY.MACD_CMF)
 SIEMENS.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for SIEMENS
-var siemens_last_signal_dmi_stochastic = "NONE"
-var siemens_last_signal_ema_cci = "NONE"
-var siemens_last_signal_macd_cmf = "NONE"
-var siemens_last_signal_bb_dmi_macd = "NONE"
+var siemens_last_buy_price_dmi_stochastic = float(na)
+var siemens_last_buy_price_ema_cci = float(na)
+var siemens_last_buy_price_macd_cmf = float(na)
+var siemens_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(SIEMENS.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(SIEMENS)
-    if RES == ACTION.BUY and siemens_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(SIEMENS, siemens_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for SIEMENS", alert.freq_once_per_bar_close)
-        siemens_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and siemens_last_signal_dmi_stochastic == 'BUY'
+        siemens_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for SIEMENS", alert.freq_once_per_bar_close)
-        siemens_last_signal_dmi_stochastic := 'SELL'
+        siemens_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(SIEMENS.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(SIEMENS)
-    if RES == ACTION.BUY and siemens_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(SIEMENS, siemens_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for SIEMENS", alert.freq_once_per_bar_close)
-        siemens_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and siemens_last_signal_ema_cci == 'BUY'
+        siemens_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for SIEMENS", alert.freq_once_per_bar_close)
-        siemens_last_signal_ema_cci := 'SELL'
+        siemens_last_buy_price_ema_cci := entryPrice
 
 if array.includes(SIEMENS.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(SIEMENS)
-    if RES == ACTION.BUY and siemens_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(SIEMENS, siemens_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for SIEMENS", alert.freq_once_per_bar_close)
-        siemens_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and siemens_last_signal_macd_cmf == 'BUY'
+        siemens_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for SIEMENS", alert.freq_once_per_bar_close)
-        siemens_last_signal_macd_cmf := 'SELL'
+        siemens_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(SIEMENS.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(SIEMENS)
-    if RES == ACTION.BUY and siemens_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(SIEMENS, siemens_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for SIEMENS", alert.freq_once_per_bar_close)
-        siemens_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and siemens_last_signal_bb_dmi_macd == 'BUY'
+        siemens_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for SIEMENS", alert.freq_once_per_bar_close)
-        siemens_last_signal_bb_dmi_macd := 'SELL'
-
-
+        siemens_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -714,96 +767,92 @@ BAJFINANCE.strategies.push(STRATEGY.EMA_CCI)
 BAJFINANCE.strategies.push(STRATEGY.MACD_CMF)
 BAJFINANCE.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for BAJFINANCE
-var bajfinance_last_signal_dmi_stochastic = "NONE"
-var bajfinance_last_signal_ema_cci = "NONE"
-var bajfinance_last_signal_macd_cmf = "NONE"
-var bajfinance_last_signal_bb_dmi_macd = "NONE"
+var bajfinance_last_buy_price_dmi_stochastic = float(na)
+var bajfinance_last_buy_price_ema_cci = float(na)
+var bajfinance_last_buy_price_macd_cmf = float(na)
+var bajfinance_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(BAJFINANCE.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(BAJFINANCE)
-    if RES == ACTION.BUY and bajfinance_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(BAJFINANCE, bajfinance_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for BAJFINANCE", alert.freq_once_per_bar_close)
-        bajfinance_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and bajfinance_last_signal_dmi_stochastic == 'BUY'
+        bajfinance_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for BAJFINANCE", alert.freq_once_per_bar_close)
-        bajfinance_last_signal_dmi_stochastic := 'SELL'
+        bajfinance_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(BAJFINANCE.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(BAJFINANCE)
-    if RES == ACTION.BUY and bajfinance_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(BAJFINANCE, bajfinance_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for BAJFINANCE", alert.freq_once_per_bar_close)
-        bajfinance_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and bajfinance_last_signal_ema_cci == 'BUY'
+        bajfinance_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for BAJFINANCE", alert.freq_once_per_bar_close)
-        bajfinance_last_signal_ema_cci := 'SELL'
+        bajfinance_last_buy_price_ema_cci := entryPrice
 
 if array.includes(BAJFINANCE.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(BAJFINANCE)
-    if RES == ACTION.BUY and bajfinance_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(BAJFINANCE, bajfinance_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for BAJFINANCE", alert.freq_once_per_bar_close)
-        bajfinance_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and bajfinance_last_signal_macd_cmf == 'BUY'
+        bajfinance_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for BAJFINANCE", alert.freq_once_per_bar_close)
-        bajfinance_last_signal_macd_cmf := 'SELL'
+        bajfinance_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(BAJFINANCE.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(BAJFINANCE)
-    if RES == ACTION.BUY and bajfinance_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(BAJFINANCE, bajfinance_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for BAJFINANCE", alert.freq_once_per_bar_close)
-        bajfinance_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and bajfinance_last_signal_bb_dmi_macd == 'BUY'
+        bajfinance_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for BAJFINANCE", alert.freq_once_per_bar_close)
-        bajfinance_last_signal_bb_dmi_macd := 'SELL'
-
-
+        bajfinance_last_buy_price_bb_dmi_macd := entryPrice
 
 
 TCI = close_high_low_price_of_stock("TCI")
 TCI.strategies := array.new<STRATEGY>()
 TCI.strategies.push(STRATEGY.DMI_STOCHASTIC)
 // Optimized Strategy Execution for TCI
-var tci_last_signal_dmi_stochastic = "NONE"
-var tci_last_signal_ema_cci = "NONE"
-var tci_last_signal_macd_cmf = "NONE"
-var tci_last_signal_bb_dmi_macd = "NONE"
+var tci_last_buy_price_dmi_stochastic = float(na)
+var tci_last_buy_price_ema_cci = float(na)
+var tci_last_buy_price_macd_cmf = float(na)
+var tci_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(TCI.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(TCI)
-    if RES == ACTION.BUY and tci_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(TCI, tci_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for TCI", alert.freq_once_per_bar_close)
-        tci_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and tci_last_signal_dmi_stochastic == 'BUY'
+        tci_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for TCI", alert.freq_once_per_bar_close)
-        tci_last_signal_dmi_stochastic := 'SELL'
+        tci_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(TCI.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(TCI)
-    if RES == ACTION.BUY and tci_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(TCI, tci_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for TCI", alert.freq_once_per_bar_close)
-        tci_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and tci_last_signal_ema_cci == 'BUY'
+        tci_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for TCI", alert.freq_once_per_bar_close)
-        tci_last_signal_ema_cci := 'SELL'
+        tci_last_buy_price_ema_cci := entryPrice
 
 if array.includes(TCI.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(TCI)
-    if RES == ACTION.BUY and tci_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(TCI, tci_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for TCI", alert.freq_once_per_bar_close)
-        tci_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and tci_last_signal_macd_cmf == 'BUY'
+        tci_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for TCI", alert.freq_once_per_bar_close)
-        tci_last_signal_macd_cmf := 'SELL'
+        tci_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(TCI.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(TCI)
-    if RES == ACTION.BUY and tci_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(TCI, tci_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for TCI", alert.freq_once_per_bar_close)
-        tci_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and tci_last_signal_bb_dmi_macd == 'BUY'
+        tci_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for TCI", alert.freq_once_per_bar_close)
-        tci_last_signal_bb_dmi_macd := 'SELL'
-
-
+        tci_last_buy_price_bb_dmi_macd := entryPrice
 
 
 MAXHEALTH = close_high_low_price_of_stock("MAXHEALTH")
@@ -811,48 +860,46 @@ MAXHEALTH.strategies := array.new<STRATEGY>()
 MAXHEALTH.strategies.push(STRATEGY.DMI_STOCHASTIC)
 MAXHEALTH.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for MAXHEALTH
-var maxhealth_last_signal_dmi_stochastic = "NONE"
-var maxhealth_last_signal_ema_cci = "NONE"
-var maxhealth_last_signal_macd_cmf = "NONE"
-var maxhealth_last_signal_bb_dmi_macd = "NONE"
+var maxhealth_last_buy_price_dmi_stochastic = float(na)
+var maxhealth_last_buy_price_ema_cci = float(na)
+var maxhealth_last_buy_price_macd_cmf = float(na)
+var maxhealth_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(MAXHEALTH.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(MAXHEALTH)
-    if RES == ACTION.BUY and maxhealth_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(MAXHEALTH, maxhealth_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for MAXHEALTH", alert.freq_once_per_bar_close)
-        maxhealth_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and maxhealth_last_signal_dmi_stochastic == 'BUY'
+        maxhealth_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for MAXHEALTH", alert.freq_once_per_bar_close)
-        maxhealth_last_signal_dmi_stochastic := 'SELL'
+        maxhealth_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(MAXHEALTH.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(MAXHEALTH)
-    if RES == ACTION.BUY and maxhealth_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(MAXHEALTH, maxhealth_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for MAXHEALTH", alert.freq_once_per_bar_close)
-        maxhealth_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and maxhealth_last_signal_ema_cci == 'BUY'
+        maxhealth_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for MAXHEALTH", alert.freq_once_per_bar_close)
-        maxhealth_last_signal_ema_cci := 'SELL'
+        maxhealth_last_buy_price_ema_cci := entryPrice
 
 if array.includes(MAXHEALTH.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(MAXHEALTH)
-    if RES == ACTION.BUY and maxhealth_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(MAXHEALTH, maxhealth_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for MAXHEALTH", alert.freq_once_per_bar_close)
-        maxhealth_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and maxhealth_last_signal_macd_cmf == 'BUY'
+        maxhealth_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for MAXHEALTH", alert.freq_once_per_bar_close)
-        maxhealth_last_signal_macd_cmf := 'SELL'
+        maxhealth_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(MAXHEALTH.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(MAXHEALTH)
-    if RES == ACTION.BUY and maxhealth_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(MAXHEALTH, maxhealth_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for MAXHEALTH", alert.freq_once_per_bar_close)
-        maxhealth_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and maxhealth_last_signal_bb_dmi_macd == 'BUY'
+        maxhealth_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for MAXHEALTH", alert.freq_once_per_bar_close)
-        maxhealth_last_signal_bb_dmi_macd := 'SELL'
-
-
+        maxhealth_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -863,47 +910,46 @@ BHARTIARTL.strategies.push(STRATEGY.EMA_CCI)
 BHARTIARTL.strategies.push(STRATEGY.MACD_CMF)
 BHARTIARTL.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for BHARTIARTL
-var bhartiartl_last_signal_dmi_stochastic = "NONE"
-var bhartiartl_last_signal_ema_cci = "NONE"
-var bhartiartl_last_signal_macd_cmf = "NONE"
-var bhartiartl_last_signal_bb_dmi_macd = "NONE"
+var bhartiartl_last_buy_price_dmi_stochastic = float(na)
+var bhartiartl_last_buy_price_ema_cci = float(na)
+var bhartiartl_last_buy_price_macd_cmf = float(na)
+var bhartiartl_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(BHARTIARTL.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(BHARTIARTL)
-    if RES == ACTION.BUY and bhartiartl_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(BHARTIARTL, bhartiartl_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for BHARTIARTL", alert.freq_once_per_bar_close)
-        bhartiartl_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and bhartiartl_last_signal_dmi_stochastic == 'BUY'
+        bhartiartl_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for BHARTIARTL", alert.freq_once_per_bar_close)
-        bhartiartl_last_signal_dmi_stochastic := 'SELL'
+        bhartiartl_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(BHARTIARTL.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(BHARTIARTL)
-    if RES == ACTION.BUY and bhartiartl_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(BHARTIARTL, bhartiartl_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for BHARTIARTL", alert.freq_once_per_bar_close)
-        bhartiartl_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and bhartiartl_last_signal_ema_cci == 'BUY'
+        bhartiartl_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for BHARTIARTL", alert.freq_once_per_bar_close)
-        bhartiartl_last_signal_ema_cci := 'SELL'
+        bhartiartl_last_buy_price_ema_cci := entryPrice
 
 if array.includes(BHARTIARTL.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(BHARTIARTL)
-    if RES == ACTION.BUY and bhartiartl_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(BHARTIARTL, bhartiartl_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for BHARTIARTL", alert.freq_once_per_bar_close)
-        bhartiartl_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and bhartiartl_last_signal_macd_cmf == 'BUY'
+        bhartiartl_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for BHARTIARTL", alert.freq_once_per_bar_close)
-        bhartiartl_last_signal_macd_cmf := 'SELL'
+        bhartiartl_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(BHARTIARTL.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(BHARTIARTL)
-    if RES == ACTION.BUY and bhartiartl_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(BHARTIARTL, bhartiartl_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for BHARTIARTL", alert.freq_once_per_bar_close)
-        bhartiartl_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and bhartiartl_last_signal_bb_dmi_macd == 'BUY'
+        bhartiartl_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for BHARTIARTL", alert.freq_once_per_bar_close)
-        bhartiartl_last_signal_bb_dmi_macd := 'SELL'
-
+        bhartiartl_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -915,47 +961,47 @@ LUPIN.strategies.push(STRATEGY.EMA_CCI)
 LUPIN.strategies.push(STRATEGY.MACD_CMF)
 LUPIN.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for LUPIN
-var lupin_last_signal_dmi_stochastic = "NONE"
-var lupin_last_signal_ema_cci = "NONE"
-var lupin_last_signal_macd_cmf = "NONE"
-var lupin_last_signal_bb_dmi_macd = "NONE"
+
+var lupin_last_buy_price_dmi_stochastic = float(na)
+var lupin_last_buy_price_ema_cci = float(na)
+var lupin_last_buy_price_macd_cmf = float(na)
+var lupin_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(LUPIN.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(LUPIN)
-    if RES == ACTION.BUY and lupin_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(LUPIN, lupin_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for LUPIN", alert.freq_once_per_bar_close)
-        lupin_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and lupin_last_signal_dmi_stochastic == 'BUY'
+        lupin_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for LUPIN", alert.freq_once_per_bar_close)
-        lupin_last_signal_dmi_stochastic := 'SELL'
+        lupin_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(LUPIN.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(LUPIN)
-    if RES == ACTION.BUY and lupin_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(LUPIN, lupin_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for LUPIN", alert.freq_once_per_bar_close)
-        lupin_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and lupin_last_signal_ema_cci == 'BUY'
+        lupin_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for LUPIN", alert.freq_once_per_bar_close)
-        lupin_last_signal_ema_cci := 'SELL'
+        lupin_last_buy_price_ema_cci := entryPrice
 
 if array.includes(LUPIN.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(LUPIN)
-    if RES == ACTION.BUY and lupin_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(LUPIN, lupin_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for LUPIN", alert.freq_once_per_bar_close)
-        lupin_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and lupin_last_signal_macd_cmf == 'BUY'
+        lupin_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for LUPIN", alert.freq_once_per_bar_close)
-        lupin_last_signal_macd_cmf := 'SELL'
+        lupin_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(LUPIN.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(LUPIN)
-    if RES == ACTION.BUY and lupin_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(LUPIN, lupin_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for LUPIN", alert.freq_once_per_bar_close)
-        lupin_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and lupin_last_signal_bb_dmi_macd == 'BUY'
+        lupin_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for LUPIN", alert.freq_once_per_bar_close)
-        lupin_last_signal_bb_dmi_macd := 'SELL'
-
+        lupin_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -963,48 +1009,46 @@ INOXINDIA = close_high_low_price_of_stock("INOXINDIA")
 INOXINDIA.strategies := array.new<STRATEGY>()
 INOXINDIA.strategies.push(STRATEGY.DMI_STOCHASTIC)
 // Optimized Strategy Execution for INOXINDIA
-var inoxindia_last_signal_dmi_stochastic = "NONE"
-var inoxindia_last_signal_ema_cci = "NONE"
-var inoxindia_last_signal_macd_cmf = "NONE"
-var inoxindia_last_signal_bb_dmi_macd = "NONE"
+var inoxindia_last_buy_price_dmi_stochastic = float(na)
+var inoxindia_last_buy_price_ema_cci = float(na)
+var inoxindia_last_buy_price_macd_cmf = float(na)
+var inoxindia_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(INOXINDIA.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(INOXINDIA)
-    if RES == ACTION.BUY and inoxindia_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(INOXINDIA, inoxindia_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for INOXINDIA", alert.freq_once_per_bar_close)
-        inoxindia_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and inoxindia_last_signal_dmi_stochastic == 'BUY'
+        inoxindia_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for INOXINDIA", alert.freq_once_per_bar_close)
-        inoxindia_last_signal_dmi_stochastic := 'SELL'
+        inoxindia_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(INOXINDIA.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(INOXINDIA)
-    if RES == ACTION.BUY and inoxindia_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(INOXINDIA, inoxindia_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for INOXINDIA", alert.freq_once_per_bar_close)
-        inoxindia_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and inoxindia_last_signal_ema_cci == 'BUY'
+        inoxindia_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for INOXINDIA", alert.freq_once_per_bar_close)
-        inoxindia_last_signal_ema_cci := 'SELL'
+        inoxindia_last_buy_price_ema_cci := entryPrice
 
 if array.includes(INOXINDIA.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(INOXINDIA)
-    if RES == ACTION.BUY and inoxindia_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(INOXINDIA, inoxindia_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for INOXINDIA", alert.freq_once_per_bar_close)
-        inoxindia_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and inoxindia_last_signal_macd_cmf == 'BUY'
+        inoxindia_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for INOXINDIA", alert.freq_once_per_bar_close)
-        inoxindia_last_signal_macd_cmf := 'SELL'
+        inoxindia_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(INOXINDIA.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(INOXINDIA)
-    if RES == ACTION.BUY and inoxindia_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(INOXINDIA, inoxindia_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for INOXINDIA", alert.freq_once_per_bar_close)
-        inoxindia_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and inoxindia_last_signal_bb_dmi_macd == 'BUY'
+        inoxindia_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for INOXINDIA", alert.freq_once_per_bar_close)
-        inoxindia_last_signal_bb_dmi_macd := 'SELL'
-
-
+        inoxindia_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -1015,48 +1059,46 @@ SUZLON.strategies.push(STRATEGY.MACD_CMF)
 SUZLON.strategies.push(STRATEGY.BB_DMI_MACD)
 
 // Check for strategy presence and execute only if found
-var suzlon_last_signal_dmi_stochastic = "NONE"
-var suzlon_last_signal_ema_cci = "NONE"
-var suzlon_last_signal_macd_cmf = "NONE"
-var suzlon_last_signal_bb_dmi_macd = "NONE"
+var suzlon_last_buy_price_dmi_stochastic = float(na)
+var suzlon_last_buy_price_ema_cci = float(na)
+var suzlon_last_buy_price_macd_cmf = float(na)
+var suzlon_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(SUZLON.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(SUZLON)
-    if RES == ACTION.BUY and suzlon_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(SUZLON, suzlon_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for SUZLON", alert.freq_once_per_bar_close)
-        suzlon_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and suzlon_last_signal_dmi_stochastic == 'BUY'
+        suzlon_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for SUZLON", alert.freq_once_per_bar_close)
-        suzlon_last_signal_dmi_stochastic := 'SELL'
+        suzlon_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(SUZLON.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(SUZLON)
-    if RES == ACTION.BUY and suzlon_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(SUZLON, suzlon_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for SUZLON", alert.freq_once_per_bar_close)
-        suzlon_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and suzlon_last_signal_ema_cci == 'BUY'
+        suzlon_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for SUZLON", alert.freq_once_per_bar_close)
-        suzlon_last_signal_ema_cci := 'SELL'
+        suzlon_last_buy_price_ema_cci := entryPrice
 
 if array.includes(SUZLON.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(SUZLON)
-    if RES == ACTION.BUY and suzlon_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(SUZLON, suzlon_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for SUZLON", alert.freq_once_per_bar_close)
-        suzlon_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and suzlon_last_signal_macd_cmf == 'BUY'
+        suzlon_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for SUZLON", alert.freq_once_per_bar_close)
-        suzlon_last_signal_macd_cmf := 'SELL'
+        suzlon_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(SUZLON.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(SUZLON)
-    if RES == ACTION.BUY and suzlon_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(SUZLON, suzlon_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for SUZLON", alert.freq_once_per_bar_close)
-        suzlon_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and suzlon_last_signal_bb_dmi_macd == 'BUY'
+        suzlon_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for SUZLON", alert.freq_once_per_bar_close)
-        suzlon_last_signal_bb_dmi_macd := 'SELL'
-
-
+        suzlon_last_buy_price_bb_dmi_macd := entryPrice
 
 
 MOTILALOFS = close_high_low_price_of_stock("MOTILALOFS")
@@ -1066,49 +1108,46 @@ MOTILALOFS.strategies.push(STRATEGY.EMA_CCI)
 MOTILALOFS.strategies.push(STRATEGY.MACD_CMF)
 MOTILALOFS.strategies.push(STRATEGY.BB_DMI_MACD)
 // Check for strategy presence and execute only if found
-var motilalofs_last_signal_dmi_stochastic = "NONE"
-var motilalofs_last_signal_ema_cci = "NONE"
-var motilalofs_last_signal_macd_cmf = "NONE"
-var motilalofs_last_signal_bb_dmi_macd = "NONE"
+var motilalofs_last_buy_price_dmi_stochastic = float(na)
+var motilalofs_last_buy_price_ema_cci = float(na)
+var motilalofs_last_buy_price_macd_cmf = float(na)
+var motilalofs_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(MOTILALOFS.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(MOTILALOFS)
-    if RES == ACTION.BUY and motilalofs_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(MOTILALOFS, motilalofs_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for MOTILALOFS", alert.freq_once_per_bar_close)
-        motilalofs_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and motilalofs_last_signal_dmi_stochastic == 'BUY'
+        motilalofs_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for MOTILALOFS", alert.freq_once_per_bar_close)
-        motilalofs_last_signal_dmi_stochastic := 'SELL'
+        motilalofs_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(MOTILALOFS.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(MOTILALOFS)
-    if RES == ACTION.BUY and motilalofs_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(MOTILALOFS, motilalofs_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for MOTILALOFS", alert.freq_once_per_bar_close)
-        motilalofs_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and motilalofs_last_signal_ema_cci == 'BUY'
+        motilalofs_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for MOTILALOFS", alert.freq_once_per_bar_close)
-        motilalofs_last_signal_ema_cci := 'SELL'
+        motilalofs_last_buy_price_ema_cci := entryPrice
 
 if array.includes(MOTILALOFS.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(MOTILALOFS)
-    if RES == ACTION.BUY and motilalofs_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(MOTILALOFS, motilalofs_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for MOTILALOFS", alert.freq_once_per_bar_close)
-        motilalofs_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and motilalofs_last_signal_macd_cmf == 'BUY'
+        motilalofs_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for MOTILALOFS", alert.freq_once_per_bar_close)
-        motilalofs_last_signal_macd_cmf := 'SELL'
+        motilalofs_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(MOTILALOFS.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(MOTILALOFS)
-    if RES == ACTION.BUY and motilalofs_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(MOTILALOFS, motilalofs_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for MOTILALOFS", alert.freq_once_per_bar_close)
-        motilalofs_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and motilalofs_last_signal_bb_dmi_macd == 'BUY'
+        motilalofs_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for MOTILALOFS", alert.freq_once_per_bar_close)
-        motilalofs_last_signal_bb_dmi_macd := 'SELL'
-
-
-
+        motilalofs_last_buy_price_bb_dmi_macd := entryPrice
 
 
 HCLTECH = close_high_low_price_of_stock("HCLTECH")
@@ -1118,47 +1157,46 @@ HCLTECH.strategies.push(STRATEGY.EMA_CCI)
 HCLTECH.strategies.push(STRATEGY.MACD_CMF)
 HCLTECH.strategies.push(STRATEGY.BB_DMI_MACD)
 // Check for strategy presence and execute only if found
-var hcltech_last_signal_dmi_stochastic = "NONE"
-var hcltech_last_signal_ema_cci = "NONE"
-var hcltech_last_signal_macd_cmf = "NONE"
-var hcltech_last_signal_bb_dmi_macd = "NONE"
+var hcltech_last_buy_price_dmi_stochastic = float(na)
+var hcltech_last_buy_price_ema_cci = float(na)
+var hcltech_last_buy_price_macd_cmf = float(na)
+var hcltech_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(HCLTECH.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(HCLTECH)
-    if RES == ACTION.BUY and hcltech_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(HCLTECH, hcltech_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for HCLTECH", alert.freq_once_per_bar_close)
-        hcltech_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and hcltech_last_signal_dmi_stochastic == 'BUY'
+        hcltech_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for HCLTECH", alert.freq_once_per_bar_close)
-        hcltech_last_signal_dmi_stochastic := 'SELL'
+        hcltech_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(HCLTECH.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(HCLTECH)
-    if RES == ACTION.BUY and hcltech_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(HCLTECH, hcltech_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for HCLTECH", alert.freq_once_per_bar_close)
-        hcltech_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and hcltech_last_signal_ema_cci == 'BUY'
+        hcltech_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for HCLTECH", alert.freq_once_per_bar_close)
-        hcltech_last_signal_ema_cci := 'SELL'
+        hcltech_last_buy_price_ema_cci := entryPrice
 
 if array.includes(HCLTECH.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(HCLTECH)
-    if RES == ACTION.BUY and hcltech_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(HCLTECH, hcltech_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for HCLTECH", alert.freq_once_per_bar_close)
-        hcltech_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and hcltech_last_signal_macd_cmf == 'BUY'
+        hcltech_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for HCLTECH", alert.freq_once_per_bar_close)
-        hcltech_last_signal_macd_cmf := 'SELL'
+        hcltech_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(HCLTECH.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(HCLTECH)
-    if RES == ACTION.BUY and hcltech_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(HCLTECH, hcltech_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for HCLTECH", alert.freq_once_per_bar_close)
-        hcltech_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and hcltech_last_signal_bb_dmi_macd == 'BUY'
+        hcltech_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for HCLTECH", alert.freq_once_per_bar_close)
-        hcltech_last_signal_bb_dmi_macd := 'SELL'
-
+        hcltech_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -1169,48 +1207,50 @@ KALYANKJIL.strategies.push(STRATEGY.DMI_STOCHASTIC)
 KALYANKJIL.strategies.push(STRATEGY.EMA_CCI)
 KALYANKJIL.strategies.push(STRATEGY.BB_DMI_MACD)
 // Check for strategy presence and execute only if found
-var kalyankjil_last_signal_dmi_stochastic = "NONE"
-var kalyankjil_last_signal_ema_cci = "NONE"
-var kalyankjil_last_signal_macd_cmf = "NONE"
-var kalyankjil_last_signal_bb_dmi_macd = "NONE"
+var kalyankjil_last_buy_price_dmi_stochastic = float(na)
+var kalyankjil_last_buy_price_ema_cci = float(na)
+var kalyankjil_last_buy_price_macd_cmf = float(na)
+var kalyankjil_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(KALYANKJIL.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(KALYANKJIL)
-    if RES == ACTION.BUY and kalyankjil_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ] = DMI_STOCHASTIC(KALYANKJIL, kalyankjil_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
+         
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for KALYANKJIL", alert.freq_once_per_bar_close)
-        kalyankjil_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and kalyankjil_last_signal_dmi_stochastic == 'BUY'
+        kalyankjil_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
+       
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for KALYANKJIL", alert.freq_once_per_bar_close)
-        kalyankjil_last_signal_dmi_stochastic := 'SELL'
+        kalyankjil_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(KALYANKJIL.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(KALYANKJIL)
-    if RES == ACTION.BUY and kalyankjil_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ] = EMI_CCI_STRATEGY(KALYANKJIL, kalyankjil_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for KALYANKJIL", alert.freq_once_per_bar_close)
-        kalyankjil_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and kalyankjil_last_signal_ema_cci == 'BUY'
+        kalyankjil_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for KALYANKJIL", alert.freq_once_per_bar_close)
-        kalyankjil_last_signal_ema_cci := 'SELL'
+        kalyankjil_last_buy_price_ema_cci := entryPrice
 
 if array.includes(KALYANKJIL.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(KALYANKJIL)
-    if RES == ACTION.BUY and kalyankjil_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ] = MACD_CMF_STRATEGY(KALYANKJIL, kalyankjil_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
+        
         alert("⚠️ Buy signal based on MACD_CMF for KALYANKJIL", alert.freq_once_per_bar_close)
-        kalyankjil_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and kalyankjil_last_signal_macd_cmf == 'BUY'
+        kalyankjil_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
+         
         alert("⚠️ Sell signal based on MACD_CMF for KALYANKJIL", alert.freq_once_per_bar_close)
-        kalyankjil_last_signal_macd_cmf := 'SELL'
+        kalyankjil_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(KALYANKJIL.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(KALYANKJIL)
-    if RES == ACTION.BUY and kalyankjil_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ] = BB_DMI_MACD_STRATEGY(KALYANKJIL, kalyankjil_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for KALYANKJIL", alert.freq_once_per_bar_close)
-        kalyankjil_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and kalyankjil_last_signal_bb_dmi_macd == 'BUY'
+        kalyankjil_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for KALYANKJIL", alert.freq_once_per_bar_close)
-        kalyankjil_last_signal_bb_dmi_macd := 'SELL'
-
-
+        kalyankjil_last_buy_price_bb_dmi_macd := entryPrice
 
 
 ANGELONE = close_high_low_price_of_stock("ANGELONE")
@@ -1220,48 +1260,46 @@ ANGELONE.strategies.push(STRATEGY.EMA_CCI)
 ANGELONE.strategies.push(STRATEGY.MACD_CMF)
 ANGELONE.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for ANGELONE
-var angelone_last_signal_dmi_stochastic = "NONE"
-var angelone_last_signal_ema_cci = "NONE"
-var angelone_last_signal_macd_cmf = "NONE"
-var angelone_last_signal_bb_dmi_macd = "NONE"
+var angelone_last_buy_price_dmi_stochastic = float(na)
+var angelone_last_buy_price_ema_cci = float(na)
+var angelone_last_buy_price_macd_cmf = float(na)
+var angelone_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(ANGELONE.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(ANGELONE)
-    if RES == ACTION.BUY and angelone_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ]  = DMI_STOCHASTIC(ANGELONE, angelone_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for ANGELONE", alert.freq_once_per_bar_close)
-        angelone_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and angelone_last_signal_dmi_stochastic == 'BUY'
+        angelone_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for ANGELONE", alert.freq_once_per_bar_close)
-        angelone_last_signal_dmi_stochastic := 'SELL'
+        angelone_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(ANGELONE.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(ANGELONE)
-    if RES == ACTION.BUY and angelone_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ]  = EMI_CCI_STRATEGY(ANGELONE, angelone_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for ANGELONE", alert.freq_once_per_bar_close)
-        angelone_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and angelone_last_signal_ema_cci == 'BUY'
+        angelone_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for ANGELONE", alert.freq_once_per_bar_close)
-        angelone_last_signal_ema_cci := 'SELL'
+        angelone_last_buy_price_ema_cci := entryPrice
 
 if array.includes(ANGELONE.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(ANGELONE)
-    if RES == ACTION.BUY and angelone_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ]  = MACD_CMF_STRATEGY(ANGELONE, angelone_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for ANGELONE", alert.freq_once_per_bar_close)
-        angelone_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and angelone_last_signal_macd_cmf == 'BUY'
+        angelone_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for ANGELONE", alert.freq_once_per_bar_close)
-        angelone_last_signal_macd_cmf := 'SELL'
+        angelone_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(ANGELONE.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(ANGELONE)
-    if RES == ACTION.BUY and angelone_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ]  = BB_DMI_MACD_STRATEGY(ANGELONE, angelone_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for ANGELONE", alert.freq_once_per_bar_close)
-        angelone_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and angelone_last_signal_bb_dmi_macd == 'BUY'
+        angelone_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for ANGELONE", alert.freq_once_per_bar_close)
-        angelone_last_signal_bb_dmi_macd := 'SELL'
-
-
+        angelone_last_buy_price_bb_dmi_macd := entryPrice
 
 
 WONDERLA = close_high_low_price_of_stock("WONDERLA")
@@ -1269,49 +1307,46 @@ WONDERLA.strategies := array.new<STRATEGY>()
 WONDERLA.strategies.push(STRATEGY.DMI_STOCHASTIC)
 WONDERLA.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for WONDERLA
-var wonderla_last_signal_dmi_stochastic = "NONE"
-var wonderla_last_signal_ema_cci = "NONE"
-var wonderla_last_signal_macd_cmf = "NONE"
-var wonderla_last_signal_bb_dmi_macd = "NONE"
+var wonderla_last_buy_price_dmi_stochastic = float(na)
+var wonderla_last_buy_price_ema_cci = float(na)
+var wonderla_last_buy_price_macd_cmf = float(na)
+var wonderla_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(WONDERLA.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(WONDERLA)
-    if RES == ACTION.BUY and wonderla_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ]  = DMI_STOCHASTIC(WONDERLA, wonderla_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for WONDERLA", alert.freq_once_per_bar_close)
-        wonderla_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and wonderla_last_signal_dmi_stochastic == 'BUY'
+        wonderla_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for WONDERLA", alert.freq_once_per_bar_close)
-        wonderla_last_signal_dmi_stochastic := 'SELL'
+        wonderla_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(WONDERLA.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(WONDERLA)
-    if RES == ACTION.BUY and wonderla_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ]  = EMI_CCI_STRATEGY(WONDERLA, wonderla_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for WONDERLA", alert.freq_once_per_bar_close)
-        wonderla_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and wonderla_last_signal_ema_cci == 'BUY'
+        wonderla_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for WONDERLA", alert.freq_once_per_bar_close)
-        wonderla_last_signal_ema_cci := 'SELL'
+        wonderla_last_buy_price_ema_cci := entryPrice
 
 if array.includes(WONDERLA.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(WONDERLA)
-    if RES == ACTION.BUY and wonderla_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ]  = MACD_CMF_STRATEGY(WONDERLA, wonderla_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for WONDERLA", alert.freq_once_per_bar_close)
-        wonderla_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and wonderla_last_signal_macd_cmf == 'BUY'
+        wonderla_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for WONDERLA", alert.freq_once_per_bar_close)
-        wonderla_last_signal_macd_cmf := 'SELL'
+        wonderla_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(WONDERLA.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(WONDERLA)
-    if RES == ACTION.BUY and wonderla_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ]  = BB_DMI_MACD_STRATEGY(WONDERLA, wonderla_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for WONDERLA", alert.freq_once_per_bar_close)
-        wonderla_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and wonderla_last_signal_bb_dmi_macd == 'BUY'
+        wonderla_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for WONDERLA", alert.freq_once_per_bar_close)
-        wonderla_last_signal_bb_dmi_macd := 'SELL'
-
-
-
+        wonderla_last_buy_price_bb_dmi_macd := entryPrice
 
 
 NUVAMA = close_high_low_price_of_stock("NUVAMA")
@@ -1320,46 +1355,46 @@ NUVAMA.strategies.push(STRATEGY.DMI_STOCHASTIC)
 NUVAMA.strategies.push(STRATEGY.MACD_CMF)
 NUVAMA.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for NUVAMA
-var nuvama_last_signal_dmi_stochastic = "NONE"
-var nuvama_last_signal_ema_cci = "NONE"
-var nuvama_last_signal_macd_cmf = "NONE"
-var nuvama_last_signal_bb_dmi_macd = "NONE"
+var nuvama_last_buy_price_dmi_stochastic = float(na)
+var nuvama_last_buy_price_ema_cci = float(na)
+var nuvama_last_buy_price_macd_cmf = float(na)
+var nuvama_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(NUVAMA.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(NUVAMA)
-    if RES == ACTION.BUY and nuvama_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ]  = DMI_STOCHASTIC(NUVAMA, nuvama_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for NUVAMA", alert.freq_once_per_bar_close)
-        nuvama_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and nuvama_last_signal_dmi_stochastic == 'BUY'
+        nuvama_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for NUVAMA", alert.freq_once_per_bar_close)
-        nuvama_last_signal_dmi_stochastic := 'SELL'
+        nuvama_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(NUVAMA.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(NUVAMA)
-    if RES == ACTION.BUY and nuvama_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ]  = EMI_CCI_STRATEGY(NUVAMA, nuvama_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for NUVAMA", alert.freq_once_per_bar_close)
-        nuvama_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and nuvama_last_signal_ema_cci == 'BUY'
+        nuvama_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for NUVAMA", alert.freq_once_per_bar_close)
-        nuvama_last_signal_ema_cci := 'SELL'
+        nuvama_last_buy_price_ema_cci := entryPrice
 
 if array.includes(NUVAMA.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(NUVAMA)
-    if RES == ACTION.BUY and nuvama_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ]  = MACD_CMF_STRATEGY(NUVAMA, nuvama_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for NUVAMA", alert.freq_once_per_bar_close)
-        nuvama_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and nuvama_last_signal_macd_cmf == 'BUY'
+        nuvama_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for NUVAMA", alert.freq_once_per_bar_close)
-        nuvama_last_signal_macd_cmf := 'SELL'
+        nuvama_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(NUVAMA.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(NUVAMA)
-    if RES == ACTION.BUY and nuvama_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ]  = BB_DMI_MACD_STRATEGY(NUVAMA, nuvama_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for NUVAMA", alert.freq_once_per_bar_close)
-        nuvama_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and nuvama_last_signal_bb_dmi_macd == 'BUY'
+        nuvama_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for NUVAMA", alert.freq_once_per_bar_close)
-        nuvama_last_signal_bb_dmi_macd := 'SELL'
+        nuvama_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -1371,47 +1406,46 @@ GRWRHITECH.strategies.push(STRATEGY.EMA_CCI)
 GRWRHITECH.strategies.push(STRATEGY.MACD_CMF)
 GRWRHITECH.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for GRWRHITECH
-var grwrhitech_last_signal_dmi_stochastic = "NONE"
-var grwrhitech_last_signal_ema_cci = "NONE"
-var grwrhitech_last_signal_macd_cmf = "NONE"
-var grwrhitech_last_signal_bb_dmi_macd = "NONE"
+var grwrhitech_last_buy_price_dmi_stochastic = float(na)
+var grwrhitech_last_buy_price_ema_cci = float(na)
+var grwrhitech_last_buy_price_macd_cmf = float(na)
+var grwrhitech_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(GRWRHITECH.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(GRWRHITECH)
-    if RES == ACTION.BUY and grwrhitech_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ]  = DMI_STOCHASTIC(GRWRHITECH , grwrhitech_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for GRWRHITECH", alert.freq_once_per_bar_close)
-        grwrhitech_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and grwrhitech_last_signal_dmi_stochastic == 'BUY'
+        grwrhitech_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for GRWRHITECH", alert.freq_once_per_bar_close)
-        grwrhitech_last_signal_dmi_stochastic := 'SELL'
+        grwrhitech_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(GRWRHITECH.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(GRWRHITECH)
-    if RES == ACTION.BUY and grwrhitech_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ]  = EMI_CCI_STRATEGY(GRWRHITECH , grwrhitech_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for GRWRHITECH", alert.freq_once_per_bar_close)
-        grwrhitech_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and grwrhitech_last_signal_ema_cci == 'BUY'
+        grwrhitech_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for GRWRHITECH", alert.freq_once_per_bar_close)
-        grwrhitech_last_signal_ema_cci := 'SELL'
+        grwrhitech_last_buy_price_ema_cci := entryPrice
 
 if array.includes(GRWRHITECH.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(GRWRHITECH)
-    if RES == ACTION.BUY and grwrhitech_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ]  = MACD_CMF_STRATEGY(GRWRHITECH , grwrhitech_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for GRWRHITECH", alert.freq_once_per_bar_close)
-        grwrhitech_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and grwrhitech_last_signal_macd_cmf == 'BUY'
+        grwrhitech_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for GRWRHITECH", alert.freq_once_per_bar_close)
-        grwrhitech_last_signal_macd_cmf := 'SELL'
+        grwrhitech_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(GRWRHITECH.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(GRWRHITECH)
-    if RES == ACTION.BUY and grwrhitech_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ]  = BB_DMI_MACD_STRATEGY(GRWRHITECH , grwrhitech_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for GRWRHITECH", alert.freq_once_per_bar_close)
-        grwrhitech_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and grwrhitech_last_signal_bb_dmi_macd == 'BUY'
+        grwrhitech_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for GRWRHITECH", alert.freq_once_per_bar_close)
-        grwrhitech_last_signal_bb_dmi_macd := 'SELL'
-
+        grwrhitech_last_buy_price_bb_dmi_macd := entryPrice
 
 
 
@@ -1421,48 +1455,46 @@ NETWEB.strategies.push(STRATEGY.DMI_STOCHASTIC)
 NETWEB.strategies.push(STRATEGY.EMA_CCI)
 NETWEB.strategies.push(STRATEGY.BB_DMI_MACD)
 // Optimized Strategy Execution for NETWEB
-var netweb_last_signal_dmi_stochastic = "NONE"
-var netweb_last_signal_ema_cci = "NONE"
-var netweb_last_signal_macd_cmf = "NONE"
-var netweb_last_signal_bb_dmi_macd = "NONE"
+var netweb_last_buy_price_dmi_stochastic = float(na)
+var netweb_last_buy_price_ema_cci = float(na)
+var netweb_last_buy_price_macd_cmf = float(na)
+var netweb_last_buy_price_bb_dmi_macd = float(na)
 
 if array.includes(NETWEB.strategies, STRATEGY.DMI_STOCHASTIC)
-    ACTION RES = DMI_STOCHASTIC(NETWEB)
-    if RES == ACTION.BUY and netweb_last_signal_dmi_stochastic != 'BUY'
+    [ RES , entryPrice ]  = DMI_STOCHASTIC(NETWEB , netweb_last_buy_price_dmi_stochastic)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on DMI_STOCHASTIC for NETWEB", alert.freq_once_per_bar_close)
-        netweb_last_signal_dmi_stochastic := 'BUY'
-    if RES == ACTION.SELL and netweb_last_signal_dmi_stochastic == 'BUY'
+        netweb_last_buy_price_dmi_stochastic := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on DMI_STOCHASTIC for NETWEB", alert.freq_once_per_bar_close)
-        netweb_last_signal_dmi_stochastic := 'SELL'
+        netweb_last_buy_price_dmi_stochastic := entryPrice
 
 if array.includes(NETWEB.strategies, STRATEGY.EMA_CCI)
-    ACTION RES = EMI_CCI_STRATEGY(NETWEB)
-    if RES == ACTION.BUY and netweb_last_signal_ema_cci != 'BUY'
+    [ RES , entryPrice ]  = EMI_CCI_STRATEGY(NETWEB , netweb_last_buy_price_ema_cci)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on EMA_CCI for NETWEB", alert.freq_once_per_bar_close)
-        netweb_last_signal_ema_cci := 'BUY'
-    if RES == ACTION.SELL and netweb_last_signal_ema_cci == 'BUY'
+        netweb_last_buy_price_ema_cci := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on EMA_CCI for NETWEB", alert.freq_once_per_bar_close)
-        netweb_last_signal_ema_cci := 'SELL'
+        netweb_last_buy_price_ema_cci := entryPrice
 
 if array.includes(NETWEB.strategies, STRATEGY.MACD_CMF)
-    ACTION RES = MACD_CMF_STRATEGY(NETWEB)
-    if RES == ACTION.BUY and netweb_last_signal_macd_cmf != 'BUY'
+    [ RES , entryPrice ]  = MACD_CMF_STRATEGY(NETWEB , netweb_last_buy_price_macd_cmf)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on MACD_CMF for NETWEB", alert.freq_once_per_bar_close)
-        netweb_last_signal_macd_cmf := 'BUY'
-    if RES == ACTION.SELL and netweb_last_signal_macd_cmf == 'BUY'
+        netweb_last_buy_price_macd_cmf := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on MACD_CMF for NETWEB", alert.freq_once_per_bar_close)
-        netweb_last_signal_macd_cmf := 'SELL'
+        netweb_last_buy_price_macd_cmf := entryPrice
 
 if array.includes(NETWEB.strategies, STRATEGY.BB_DMI_MACD)
-    ACTION RES = BB_DMI_MACD_STRATEGY(NETWEB)
-    if RES == ACTION.BUY and netweb_last_signal_bb_dmi_macd != 'BUY'
+    [ RES , entryPrice ]  = BB_DMI_MACD_STRATEGY(NETWEB , netweb_last_buy_price_bb_dmi_macd)
+    if RES == ACTION.BUY
         alert("⚠️ Buy signal based on BB_DMI_MACD for NETWEB", alert.freq_once_per_bar_close)
-        netweb_last_signal_bb_dmi_macd := 'BUY'
-    if RES == ACTION.SELL and netweb_last_signal_bb_dmi_macd == 'BUY'
+        netweb_last_buy_price_bb_dmi_macd := entryPrice
+    if RES == ACTION.SELL
         alert("⚠️ Sell signal based on BB_DMI_MACD for NETWEB", alert.freq_once_per_bar_close)
-        netweb_last_signal_bb_dmi_macd := 'SELL'
-
-
+        netweb_last_buy_price_bb_dmi_macd := entryPrice
 
 
 plot(BASF.highPrice)

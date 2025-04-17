@@ -2,22 +2,27 @@
 // © bairapraveen8
 
 //@version=6
-strategy("EMA Crossover with CCI strategy", overlay=true)
+strategy("EMA Crossover with CCI strategy", overlay = false)
 
 // Input for EMAs
-ema5 = ta.ema(close, 5)
-ema8 = ta.ema(close, 8)
 ema13 = ta.ema(close, 13)
+ema26 = ta.ema(close, 26)
+ema52 = ta.ema(close, 52)
 
 // Input for CCI
-cciLength = input(20, title="CCI Length")
+cciLength = input(25, title="CCI Length")
 cci = ta.cci(close, cciLength)
+atr = ta.atr(14)
+stopLoss = strategy.position_avg_price - ( atr*4 ) // 10% stop-loss
 
-// Entry Condition
-longCondition = ta.crossover(ema5, ema8) and ema5 > ema13 and ema8 > ema13 and cci > 100
+// ✅ Take-Profit Calculation (20% Above Entry)
+takeProfit = strategy.position_avg_price * 1.5 
+
+// Entry Condition 
+longCondition = ema13 >= ema26 and ema13 >= ema52 and ema26 >= ema52 and cci > 80
 
 // Exit Condition
-exitCondition = (ta.crossunder(ema5, ema8) and ema5 < ema13 and ema8 < ema13) and cci < 100
+exitCondition = (( ta.crossunder(ema13,ema26) and ema13 < ema26 and ema13 <= ema52) and cci < 20) or (close <= stopLoss) or (close >= takeProfit)
 
 // Execute trade
 if (longCondition)
@@ -26,13 +31,13 @@ if (longCondition)
 if (exitCondition)
     strategy.close("Long")
 
-// // Plot EMAs
-// plot(ema5, title="5 EMA", color=color.blue, linewidth=2)
-// plot(ema8, title="8 EMA", color=color.green, linewidth=2)
-// plot(ema13, title="13 EMA", color=color.red, linewidth=2)
+// Plot EMAs
+plot(ema13, title="5 EMA", color=color.blue, linewidth=2, force_overlay =  true)
+plot(ema26, title="8 EMA", color=color.green, linewidth=2, force_overlay =  true)
+plot(ema52, title="13 EMA", color=color.red, linewidth=2, force_overlay = true)
 
 // // Plot CCI
 // hline(100, "CCI Overbought", color=color.gray)
 // hline(-100, "CCI Oversold", color=color.gray)
-// plot(cci, title="CCI", color=color.orange, linewidth=2)
+plot(cci, title="CCI", color=color.orange, linewidth=2)
 

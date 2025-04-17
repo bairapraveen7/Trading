@@ -4,8 +4,13 @@
 //@version=6
 strategy("CMF & MACD Strategy", overlay=false)
 
+sma10 = ta.sma(close,10)
+
 sma50 = ta.sma(close,50)
 sma20 = ta.sma(close,20)
+slope = sma50 - sma50[5]
+trendDirection = slope > 0
+
 
 // Calculate CMF (Chaikin Money Flow)
 var cumVol = 0.
@@ -34,20 +39,25 @@ signal = sma_signal == "SMA" ? ta.sma(macd, signal_length) : ta.ema(macd, signal
 hist = macd - signal
 postitve_diff_percent = ((macd - signal ) / math.abs(signal)) * 100
 negative_diff_percent = ((signal - macd ) / math.abs(signal)) * 100
+atr = ta.atr(14)
+stopLoss = strategy.position_avg_price - ( atr*4 ) // 10% stop-loss
+
+// ✅ Take-Profit Calculation (20% Above Entry)
+takeProfit = strategy.position_avg_price * 1.23  
 
 alertcondition(hist[1] >= 0 and hist < 0, title = 'Rising to falling', message = 'The MACD histogram switched from a rising to falling state')
 alertcondition(hist[1] <= 0 and hist > 0, title = 'Falling to rising', message = 'The MACD histogram switched from a falling to rising state')
 
 // hline(0, "Zero Line", color = color.new(#787B86, 50))
 // plot(hist, title = "Histogram", style = plot.style_columns, color = (hist >= 0 ? (hist[1] < hist ? #26A69A : #B2DFDB) : (hist[1] < hist ? #FFCDD2 : #FF5252)))
-plot(macd,   title = "MACD",   color = #2962FF, force_overlay = false)
-plot(signal, title = "Signal", color = #FF6D00,force_overlay = false)
+// plot(macd,   title = "MACD",   color = #2962FF, force_overlay = false)
+// plot(signal, title = "Signal", color = #FF6D00,force_overlay = false)
 
 // Entry Condition: CMF > 0.05 AND MACD Line > Signal Line
-longCondition = mf > 0.05 and close > sma20 and macd > signal and postitve_diff_percent > 4
+longCondition = mf > 0.05  and macd > signal and postitve_diff_percent > 4 and trendDirection
 
 // Exit Condition: mf < 0.05 OR MACD Line < Signal Line
-exitCondition = close < sma50
+exitCondition = ta.crossunder(sma10, sma50) or (close >= takeProfit) or ( close<= stopLoss )
 
 // Enter trade when conditions are met
 if (longCondition)
@@ -57,3 +67,9 @@ if (longCondition)
 if (exitCondition)
     strategy.close("Long")
 
+
+// plot(macd,   title = "MACD",   color = #2962FF, force_overlay = false)
+// plot(signal, title = "Signal", color = #FF6D00,force_overlay = false)
+// plot(mf, "CMF",  color = #43A047)
+
+ 
